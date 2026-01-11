@@ -1,7 +1,7 @@
 import os
 
 # --- CONFIGURATION ---
-COPYRIGHT_HOLDER = "Healthcare Lifesciences Team, Google LLC"
+COPYRIGHT_HOLDER = "Google LLC"
 YEAR = "2026"
 
 LICENSE_HEADER = f"""# Copyright {YEAR} {COPYRIGHT_HOLDER}
