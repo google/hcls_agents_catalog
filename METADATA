@@ -4,7 +4,7 @@ description: "Agent for interacting with RxNorm."
 third_party {
   url {
     type: GIT
-    value: "https://ospo-internal.git.corp.google.com/releasing/hcls_agents_catalog/hcls_agents_catalog"
+    value: ""
   }
   version: "main" # Or a specific commit hash/tag
   last_upgrade_date { year: 2026 month: 1 day: 11 } # Update with current date
