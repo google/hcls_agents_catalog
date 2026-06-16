@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>A2UI Local Tester</title>
+    <style>
+        body { font-family: sans-serif; margin: 20px; background: #f0f2f5; }
+        .container { max-width: 800px; margin: 0 auto; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .chat-box { border: 1px solid #ccc; padding: 10px; height: 400px; overflow-y: scroll; margin-bottom: 10px; background: #fafafa; }
+        .card { border: 1px solid #ddd; padding: 15px; margin: 10px 0; border-radius: 8px; background: white; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
+        .button { background: #007bff; color: white; padding: 8px 15px; border: none; border-radius: 4px; cursor: pointer; margin-right: 5px; }
+        .button:hover { background: #0056b3; }
+        .input-group { display: flex; gap: 10px; }
+        input[type="text"] { flex-grow: 1; padding: 8px; border: 1px solid #ccc; border-radius: 4px; }
+        select { padding: 8px; border: 1px solid #ccc; border-radius: 4px; }
+        pre { background: #f8f9fa; padding: 10px; border-radius: 4px; border: 1px solid #e9ecef; overflow-x: auto; }
+        details { margin-top: 10px; }
+        summary { cursor: pointer; color: #007bff; }
+        .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+        .session-info { font-size: 0.9em; color: #666; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>A2UI Local Tester</h1>
+            <div class="session-info">
+                <span id="session-id-display"></span>
+                <button onclick="startNewSession()" class="button" style="background: #dc3545; margin-left: 10px;">New Session</button>
+            </div>
+        </div>
+        
+        <div class="chat-box" id="chat"></div>
+        <div class="input-group">
+            <input type="text" id="input" placeholder="Say hello to render the iframe...">
+            <button onclick="sendMessage()" class="button">Send</button>
+        </div>
+        
+        <details>
+            <summary>Show Raw UI JSON</summary>
+            <pre id="json-dump">No UI data yet.</pre>
+        </details>
+    </div>
+
+    <script>
+        let dataModel = {};
+        let sessionId = generateSessionId();
+
+        function generateSessionId() {
+            return 'session_' + Math.random().toString(36).substr(2, 9);
+        }
+
+        function updateSessionDisplay() {
+            document.getElementById('session-id-display').innerText = `Session: ${sessionId}`;
+        }
+
+        function startNewSession() {
+            sessionId = generateSessionId();
+            updateSessionDisplay();
+            dataModel = {};
+            document.getElementById('chat').innerHTML = '';
+            appendMessage('System', 'Started a new session.');
+            document.getElementById('json-dump').innerText = 'No UI data yet.';
+        }
+
+        updateSessionDisplay();
+
+        document.getElementById('input').addEventListener('keypress', function (e) {
+            if (e.key === 'Enter') {
+                sendMessage();
+            }
+        });
+
+        async function sendMessage() {
+            const input = document.getElementById('input');
+            const text = input.value;
+            if (!text.trim()) return;
+            input.value = '';
+            
+            appendMessage('User', text);
+            await sendPayload({ message: { text: text } });
+        }
+
+        async function sendPayload(params) {
+            const loadingDiv = appendMessage('System', 'Agent is thinking...');
+            try {
+                const response = await fetch('/jsonrpc', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        jsonrpc: '2.0',
+                        method: 'message/send',
+                        params: { ...params, session_id: sessionId },
+                        id: Date.now()
+                    })
+                });
+                
+                const data = await response.json();
+                loadingDiv.remove();
+                handleResponse(data);
+            } catch (error) {
+                loadingDiv.remove();
+                appendMessage('Error', `Failed to connect to server: ${error.message}`);
+            }
+        }
+
+        function appendMessage(sender, text) {
+            const chat = document.getElementById('chat');
+            const div = document.createElement('div');
+            div.style.marginBottom = '10px';
+            div.innerHTML = `<strong>${sender}:</strong> ${text}`;
+            chat.appendChild(div);
+            chat.scrollTop = chat.scrollHeight;
+            return div;
+        }
+
+        let currentRootId = null;
+
+        function handleResponse(data) {
+            if (data.error) {
+                appendMessage('Error', data.error.message);
+                return;
+            }
+            
+            const message = data.result.message;
+            if (message.text) {
+                appendMessage('Agent', message.text);
+            }
+            
+            const parts = message.parts;
+            if (parts) {
+                for (const part of parts) {
+                    if (part.data && part.metadata && part.metadata.mimeType === 'application/json+a2ui') {
+                        const uiData = part.data;
+                        if (uiData.beginRendering) {
+                            currentRootId = uiData.beginRendering.root;
+                        }
+                    }
+                }
+                
+                for (const part of parts) {
+                    if (part.text) {
+                        appendMessage('Agent', part.text);
+                    }
+                    if (part.data && part.metadata && part.metadata.mimeType === 'application/json+a2ui') {
+                        const uiData = part.data;
+                        
+                        if (uiData.dataModelUpdate) {
+                            const contents = uiData.dataModelUpdate.contents || [];
+                            for (const item of contents) {
+                                dataModel[item.key] = item.valueString || item.valueNumber || item.valueBoolean;
+                            }
+                        }
+                        
+                        if (uiData.surfaceUpdate) {
+                            document.getElementById('json-dump').innerText = JSON.stringify(uiData, null, 2);
+                            const rootToUse = uiData.surfaceUpdate.root || currentRootId;
+                            renderUI(uiData.surfaceUpdate, rootToUse);
+                        }
+                    }
+                }
+            }
+        }
+
+        function renderUI(surfaceUpdate, rootId) {
+            const chat = document.getElementById('chat');
+            const div = document.createElement('div');
+            div.className = 'card';
+            div.innerHTML = '<h4>Rich UI View</h4>';
+            
+            const components = surfaceUpdate.components;
+            
+            if (rootId && components) {
+                const rendered = renderComponent(rootId, components);
+                if (rendered) {
+                    div.appendChild(rendered);
+                }
+            }
+            
+            chat.appendChild(div);
+            chat.scrollTop = chat.scrollHeight;
+        }
+
+        function renderComponent(componentId, components) {
+            const compWrapper = components.find(c => c.id === componentId);
+            if (!compWrapper) return document.createTextNode(`[Missing: ${componentId}]`);
+            
+            const comp = compWrapper.component;
+            
+            if (comp.WebFrameUrl) {
+                const iframe = document.createElement('iframe');
+                const urlObj = comp.WebFrameUrl.url;
+                let srcUrl = urlObj.literalString || dataModel[urlObj.path] || "";
+                srcUrl = srcUrl.replace(/http:\/\/localhost:8000/g, window.location.origin);
+                iframe.src = srcUrl;
+                iframe.width = "100%";
+                iframe.height = (comp.WebFrameUrl.height || 450) + "px";
+                iframe.style.border = "none";
+                iframe.style.borderRadius = "8px";
+                iframe.style.boxShadow = "0 1px 3px rgba(0,0,0,0.1)";
+                iframe.style.marginTop = "10px";
+                return iframe;
+            }
+
+            if (comp.WebFrameSrcdoc) {
+                const iframe = document.createElement('iframe');
+                const htmlObj = comp.WebFrameSrcdoc.htmlContent || {};
+                let htmlContent = htmlObj.literalString || "";
+                htmlContent = htmlContent.replace(/http:\/\/localhost:8000/g, window.location.origin);
+                iframe.srcdoc = htmlContent;
+                iframe.width = "100%";
+                iframe.height = (comp.WebFrameSrcdoc.height || 450) + "px";
+                iframe.style.border = "none";
+                iframe.style.borderRadius = "8px";
+                iframe.style.boxShadow = "0 1px 3px rgba(0,0,0,0.1)";
+                iframe.style.marginTop = "10px";
+                return iframe;
+            }
+
+            if (comp.Column) {
+                const colDiv = document.createElement('div');
+                colDiv.style.display = 'flex';
+                colDiv.style.flexDirection = 'column';
+                colDiv.style.gap = '10px';
+                colDiv.style.marginTop = "10px";
+                const children = (comp.Column.children && comp.Column.children.explicitList) || [];
+                for (const childId of children) {
+                    const renderedChild = renderComponent(childId, components);
+                    if (renderedChild) colDiv.appendChild(renderedChild);
+                }
+                return colDiv;
+            }
+
+            if (comp.Row) {
+                const rowDiv = document.createElement('div');
+                rowDiv.style.display = 'flex';
+                rowDiv.style.flexDirection = 'row';
+                rowDiv.style.gap = '10px';
+                rowDiv.style.marginTop = "10px";
+                const children = (comp.Row.children && comp.Row.children.explicitList) || [];
+                for (const childId of children) {
+                    const renderedChild = renderComponent(childId, components);
+                    if (renderedChild) rowDiv.appendChild(renderedChild);
+                }
+                return rowDiv;
+            }
+
+            if (comp.Text) {
+                const textSpan = document.createElement('span');
+                const textObj = comp.Text.text || {};
+                textSpan.innerText = textObj.literalString || dataModel[textObj.path] || "";
+                if (comp.Text.usageHint === 'h1') textSpan.style.fontSize = '24px';
+                else if (comp.Text.usageHint === 'h2') textSpan.style.fontSize = '20px';
+                else if (comp.Text.usageHint === 'h3') textSpan.style.fontSize = '18px';
+                return textSpan;
+            }
+
+            if (comp.Card) {
+                const cardDiv = document.createElement('div');
+                cardDiv.style.padding = '12px';
+                cardDiv.style.border = '1px solid #dfe1e6';
+                cardDiv.style.borderRadius = '3px';
+                cardDiv.style.backgroundColor = '#ffffff';
+                cardDiv.style.boxShadow = '0 1px 2px rgba(9, 30, 66, 0.25)';
+                const cardChild = renderComponent(comp.Card.child, components);
+                if (cardChild) cardDiv.appendChild(cardChild);
+                return cardDiv;
+            }
+            
+            const fallbackDiv = document.createElement('div');
+            fallbackDiv.style.border = '1px dashed #ffc107';
+            fallbackDiv.style.padding = '10px';
+            const type = Object.keys(comp)[0] || "Unknown";
+            fallbackDiv.innerHTML = `<strong>[${type}]</strong> ${componentId}`;
+            return fallbackDiv;
+        }
+    </script>
+</body>
+</html>
