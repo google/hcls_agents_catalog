@@ -381,3 +381,62 @@ def test_show_document_non_streaming(server_fixture: subprocess.Popen[str]) -> N
     assert has_a2ui_part, "Expected A2UI payload (surfaceUpdate/beginRendering) in task history"
 
 
+def test_show_docx_document_non_streaming(server_fixture: subprocess.Popen[str]) -> None:
+    """Test showing a docx document non-streaming using A2A JSON-RPC protocol."""
+    logger.info("Starting non-streaming show docx document test")
+
+    message = Message(
+        message_id=f"msg-user-{uuid.uuid4()}",
+        role=Role.user,
+        parts=[Part(root=TextPart(text="show me the document gs://ge-demo-docs/atest.docx"))],
+    )
+
+    request = SendMessageRequest(
+        id="test-req-doc-002",
+        params=MessageSendParams(message=message),
+    )
+
+    response = requests.post(
+        A2A_RPC_URL,
+        headers=HEADERS,
+        json=request.model_dump(mode="json", exclude_none=True),
+        timeout=60,
+    )
+    assert response.status_code == 200
+
+    response_data = response.json()
+    message_response = SendMessageResponse.model_validate(response_data)
+    logger.info(f"Received response: {message_response}")
+
+    json_rpc_resp = message_response.root
+    assert hasattr(json_rpc_resp, "result")
+    task = json_rpc_resp.result
+    assert task.kind == "task"
+    assert task.status.state == "completed"
+
+    # Verify that we got the A2UI parts in the history
+    assert task.history, "No history in task"
+    
+    has_a2ui_part = False
+    for message in task.history:
+        if message.role == Role.agent:
+            for part in message.parts:
+                # Check if it's a data part with the right mimeType
+                if part.root.kind == "data":
+                    root_data = getattr(part.root, "data", None)
+                    metadata = getattr(part.root, "metadata", None)
+                    if root_data and metadata and metadata.get("mimeType") == "application/json+a2ui":
+                        if "surfaceUpdate" in root_data or "beginRendering" in root_data:
+                            if "surfaceUpdate" in root_data:
+                                components = root_data["surfaceUpdate"].get("components", [])
+                                for comp in components:
+                                    comp_wrapper = comp.get("component", {})
+                                    if "WebFrameUrl" in comp_wrapper:
+                                        url = comp_wrapper["WebFrameUrl"]["url"]["literalString"]
+                                        assert "/docx?url=gs://ge-demo-docs/atest.docx" in url
+                            has_a2ui_part = True
+                    
+    assert has_a2ui_part, "Expected A2UI payload (surfaceUpdate/beginRendering) in task history"
+
+
+

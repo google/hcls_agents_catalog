@@ -1,6 +1,6 @@
 # A2UI Document Viewer Agent
 
-A shippable, production-ready ReAct agent built on the [A2A Protocol](https://a2a-protocol.org/) to securely retrieve and render Google Cloud Storage (GCS) PDF documents inside Gemini Enterprise or local tester iframe environments.
+A shippable, production-ready ReAct agent built on the [A2A Protocol](https://a2a-protocol.org/) to securely retrieve and render Google Cloud Storage (GCS) PDF and Microsoft Word (*.docx) documents inside Gemini Enterprise or local tester iframe environments.
 
 ---
 
@@ -33,7 +33,7 @@ You can run a local mock server and web UI to interact with and test the agent:
 uv run python local_tester/server.py
 ```
 Open your browser to `http://localhost:8000`. You can ask the agent:
-> *"show me gs://hcls-ge-documents/roi_2025_health.pdf"*
+> *"show me gs://hcls-ge-documents/roi_2025_health.pdf"* or *"show me the document gs://ge-demo-docs/atest.docx"*
 
 ### Deployment to GCP Cloud Run
 Deploy the agent and configure it automatically using the `agents-cli`:
@@ -50,32 +50,41 @@ The A2UI Document Viewer Agent integrates the Gemini Large Language Model, Googl
 ```mermaid
 sequenceDiagram
     autonumber
-    User->>Gemini Enterprise: "show me gs://bucket/file.pdf"
+    User->>Gemini Enterprise: "show me gs://bucket/file.pdf" or ".docx"
     Gemini Enterprise->>Agent (Cloud Run): POST /jsonrpc (User prompt)
-    Note over Agent (Cloud Run): Resolves GCS URI and constructs absolute proxy URL:<br/>https://[SERVICE_URL]/pdf?url=gs://bucket/file.pdf
+    Note over Agent (Cloud Run): Resolves GCS URI and constructs absolute proxy URL:<br/>https://[SERVICE_URL]/pdf?url=gs://... or /docx?url=gs://...
     Agent (Cloud Run)-->>Gemini Enterprise: Return WebFrameSrcdoc redirecting to proxy URL
     Gemini Enterprise->>Iframe (Chrome Sandbox): Render iframe & execute redirect
-    Iframe (Chrome Sandbox)->>Agent (Cloud Run): GET /pdf?url=gs://bucket/file.pdf
-    Agent (Cloud Run)->>GCS Bucket: Download PDF bytes
-    GCS Bucket-->>Agent (Cloud Run): PDF binary data
-    Note over Agent (Cloud Run): 1. Base64-encodes PDF bytes<br/>2. Embeds into self-contained HTML page with PDF.js<br/>3. Returns text/html Response
-    Agent (Cloud Run)-->>Iframe (Chrome Sandbox): Return HTML page (PDF.js + PDF base64 payload)
-    Note over Iframe (Chrome Sandbox): PDF.js decodes base64 payload and renders<br/>pages directly on HTML5 Canvas.
+    Iframe (Chrome Sandbox)->>Agent (Cloud Run): GET /pdf?url=gs://... or /docx?url=gs://...
+    Agent (Cloud Run)->>GCS Bucket: Download document bytes
+    GCS Bucket-->>Agent (Cloud Run): Document binary data
+    Note over Agent (Cloud Run): 1. Base64-encodes document bytes<br/>2. Embeds into HTML page with PDF.js or docx-preview<br/>3. Returns text/html Response
+    Agent (Cloud Run)-->>Iframe (Chrome Sandbox): Return HTML page (renderer + base64 payload)
+    Note over Iframe (Chrome Sandbox): Renderer decodes base64 payload and renders directly in sandboxed iframe.
+```
+
+### A2UI Component Hierarchy
+The UI layout constructed by the agent is structured as a component tree:
+```mermaid
+graph TD
+    root["id: 'root'<br/>(Column)"] --> iframe["id: 'iframe'<br/>(WebFrameSrcdoc)"]
+    iframe -.-> redirect["HTML Redirect Script<br/>&lt;script&gt;window.location.href='.../pdf?url=gs://...' or '.../docx?url=gs://...'&lt;/script&gt;"]
+    redirect --> doc_viewer["Self-contained HTML<br/>(PDF.js or docx-preview Renderer)"]
 ```
 
 ### 1. The ReAct Agent Loop
 - The agent is defined in [app/agent.py](file:///usr/local/google/home/hmp/src/a2ui-doc-viewer/app/agent.py).
-- When a user asks to view a GCS document, the agent parses the prompt, extracts the GCS URI (e.g. `gs://bucket-name/path/to/document.pdf`), and constructs an absolute proxy URL pointing to `/pdf?url=gs://...` on its own service host.
+- When a user asks to view a GCS document, the agent parses the prompt, extracts the GCS URI (e.g. `gs://bucket-name/path/to/document.pdf` or `gs://bucket-name/path/to/document.docx`), and constructs an absolute proxy URL pointing to `/pdf?url=gs://...` or `/docx?url=gs://...` on its own service host.
 - The agent outputs a `WebFrameUrl` component, which the ADK framework automatically converts into a `WebFrameSrcdoc` containing a script redirecting to the proxy endpoint.
 
 ### 2. Bypassing Chrome's Iframe Sandbox Plugin Blockage
 - In Gemini Enterprise, extensions and interactive panels are loaded inside a **sandboxed iframe** with strict security properties.
-- Chrome's sandboxing blocks standard PDF plugins (like the Adobe Reader or Chrome native PDF viewer) from initializing inside sandboxed contexts. Attempting to load a raw PDF file (`application/pdf`) directly inside the iframe results in the browser blocking the request with `"This page has been blocked by Chrome"`.
-- To bypass this limitation, the agent's `/pdf` endpoint (in [app/fast_api_app.py](file:///usr/local/google/home/hmp/src/a2ui-doc-viewer/app/fast_api_app.py) and [local_tester/server.py](file:///usr/local/google/home/hmp/src/a2ui-doc-viewer/local_tester/server.py)):
-  1. Base64-encodes the GCS PDF document bytes.
-  2. Embeds the base64 string directly into a self-contained HTML page that loads **PDF.js** via CDN.
-  3. Returns `text/html` instead of `application/pdf`.
-- Because standard HTML and scripts are fully allowed inside the sandbox (`allow-scripts`), the browser renders the HTML page, and PDF.js decodes the embedded base64 data to draw the PDF pages directly on an HTML5 `<canvas>` element.
+- Chrome's sandboxing blocks standard PDF or Word plugins from initializing inside sandboxed contexts. Attempting to load a raw file directly inside the iframe is blocked by the browser.
+- To bypass this limitation, the agent's `/pdf` and `/docx` endpoints (in [app/fast_api_app.py](file:///usr/local/google/home/hmp/src/a2ui-doc-viewer/app/fast_api_app.py) and [local_tester/server.py](file:///usr/local/google/home/hmp/src/a2ui-doc-viewer/local_tester/server.py)):
+  1. Base64-encodes the GCS PDF/Word document bytes.
+  2. Embeds the base64 string directly into a self-contained HTML page that loads **PDF.js** (for PDF) or **docx-preview** (for Word documents) via CDN.
+  3. Returns `text/html` instead of the original raw mime types.
+- Because standard HTML and scripts are fully allowed inside the sandbox (`allow-scripts`), the browser renders the HTML page, and the client-side renderer decodes and renders the document layout.
 
 ### 3. Local Environment SSL Conflict Fallback
 - In certain local development environments, concurrent calls to the Gemini LLM (via gRPC/HTTPS) and GCS SDK (via HTTPS) can cause `pyOpenSSL` certificate context collisions (`Context has already been used to create a Connection`).

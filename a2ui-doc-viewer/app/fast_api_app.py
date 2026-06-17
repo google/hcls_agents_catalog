@@ -249,6 +249,78 @@ async def get_pdf(url: str = Query(..., description="GCS URI of the PDF file (e.
         return Response(f"Error fetching document: {str(e)}", status_code=500)
 
 
+@app.get("/docx")
+async def get_docx(url: str = Query(..., description="GCS URI of the docx file (e.g., gs://bucket/path/file.docx)")):
+    if not url.startswith("gs://"):
+        return Response("Invalid URL. Must start with gs://", status_code=400)
+    
+    try:
+        path_without_scheme = url[5:]
+        bucket_name, object_name = path_without_scheme.split("/", 1)
+    except ValueError:
+        return Response("Invalid GCS URI format", status_code=400)
+        
+    try:
+        storage_client = storage.Client()
+        bucket = storage_client.bucket(bucket_name)
+        blob = bucket.blob(object_name)
+        content = blob.download_as_bytes()
+        
+        import base64
+        docx_base64 = base64.b64encode(content).decode("utf-8")
+        
+        html_template = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <title>Word Document Viewer</title>
+          <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+          <script src="https://cdn.jsdelivr.net/npm/docx-preview@latest/dist/docx-preview.min.js"></script>
+          <style>
+            body {{ margin: 0; background-color: #f4f4f9; display: flex; flex-direction: column; align-items: center; font-family: sans-serif; }}
+            #docx-container {{ width: 100%; display: flex; flex-direction: column; align-items: center; gap: 15px; padding: 20px 0; }}
+            .docx-wrapper {{ box-shadow: 0 4px 8px rgba(0,0,0,0.15); max-width: 95%; border-radius: 4px; background: white; padding: 20px; }}
+            #loading {{ margin-top: 50px; font-size: 18px; color: #666; }}
+          </style>
+        </head>
+        <body>
+          <div id="loading">Loading document...</div>
+          <div id="docx-container"></div>
+          <script>
+            const docxData = "{docx_base64}";
+            try {{
+              const rawData = atob(docxData);
+              const uint8Array = new Uint8Array(rawData.length);
+              for (let i = 0; i < rawData.length; i++) {{
+                uint8Array[i] = rawData.charCodeAt(i);
+              }}
+              
+              const blob = new Blob([uint8Array], {{ type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" }});
+              const container = document.getElementById('docx-container');
+              
+              docx.renderAsync(blob, container).then(() => {{
+                document.getElementById('loading').remove();
+              }}).catch(err => {{
+                document.getElementById('loading').innerText = "Error rendering document: " + err.message;
+              }});
+            }} catch(err) {{
+              document.getElementById('loading').innerText = "Error decoding document data: " + err.message;
+            }}
+          </script>
+        </body>
+        </html>
+        """
+        return HTMLResponse(
+            content=html_template,
+            headers={
+                "X-Frame-Options": "ALLOWALL",
+            }
+        )
+    except Exception as e:
+        return Response(f"Error fetching document: {str(e)}", status_code=500)
+
+
+
 @app.post("/feedback")
 def collect_feedback(feedback: Feedback) -> dict[str, str]:
     """Collect and log feedback.

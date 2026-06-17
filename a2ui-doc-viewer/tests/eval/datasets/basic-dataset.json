@@ -13,6 +13,13 @@
         "role": "user",
         "parts": [{"text": "What tools do you have available?"}]
       }
+    },
+    {
+      "eval_case_id": "show_docx",
+      "prompt": {
+        "role": "user",
+        "parts": [{"text": "show me the document gs://ge-demo-docs/atest.docx"}]
+      }
     }
   ]
 }
